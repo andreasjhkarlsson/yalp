@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 
 enum sexpr_t
@@ -117,11 +118,11 @@ struct sexpr* read_sexpr(const char** str)
 {
     struct sexpr* e = NULL;
 
-    if (e = read_integer(str))
+    if ((e = read_integer(str)))
         return e;
-    else if (e = read_operator(str))
+    else if ((e = read_operator(str)))
         return e;
-    else if (e = read_list(str))
+    else if ((e = read_list(str)))
         return e;
     else
         return NULL; // TODO: ERROR
@@ -200,7 +201,7 @@ void print_sexpr(struct sexpr* sexpr)
             {
                 print_sexpr(sexpr->list.head);
                 
-                if (sexpr = sexpr->list.tail)
+                if ((sexpr = sexpr->list.tail))
                     printf(" ");
             }
             printf(")");
