@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 
 enum sexpr_t
 {
+    error,
     list,
     integer,
-    operator
+    symbol
 };
 
 struct sexpr
@@ -20,7 +22,8 @@ struct sexpr
             struct sexpr* tail;
         } list;
         int integer;
-        char operator;
+        const char* symbol;
+        const char* message;
     };    
 };
 
@@ -32,7 +35,68 @@ struct sexpr* new_sexpr(enum sexpr_t tag)
     return e;
 }
 
-#define delete_sexpr free
+struct sexpr* new_error(const char* message)
+{
+    struct sexpr* e = new_sexpr(error);
+    e->message = message;
+    return e;
+}
+
+#define CHECK_ERROR(expr) if (expr && expr->tag == error) return expr;
+
+#define MAX_SYMBOL_NAME 64
+
+enum symbol_type
+{
+    function,
+    value
+};
+
+struct env;
+
+struct symbol
+{
+    char name [MAX_SYMBOL_NAME];
+    enum symbol_type tag;
+    union 
+    {
+        struct sexpr* (*function) (struct env* env, struct symbol*, struct sexpr*);
+        struct sexpr* value;
+    };
+};
+
+struct env
+{
+    struct symbol** symbols;
+    int symbol_count;
+};
+
+struct symbol* get_symbol(struct env* env, const char* name)
+{
+    for(int i=0;i<env->symbol_count;i++)
+    {
+        if (strcmp(env->symbols[i]->name, name) == 0)
+            return env->symbols[i];
+    }
+
+    return NULL;
+}
+
+void add_symbol(struct env* env, struct symbol* symbol)
+{
+    env->symbols = realloc(env->symbols, env->symbol_count+1);
+    env->symbol_count += 1;
+    env->symbols[env->symbol_count-1] = symbol;
+}
+
+void add_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct symbol*, struct sexpr*))
+{
+    struct symbol* s = malloc(sizeof(struct symbol));
+    s->tag = function;
+    strcpy(s->name, name);
+    s->function = fn;
+    add_symbol(env, s);
+}
 
 struct sexpr* read_sexpr(const char** str);
 
@@ -61,20 +125,43 @@ struct sexpr* read_integer(const char** str)
     }
 }
 
-struct sexpr* read_operator(const char** str)
+bool is_symbol_character(char c)
 {
-    switch (**str)
+    return
+        (c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') ||
+        (c == '_') ||
+        (c == '+') ||
+        (c == '-') ||
+        (c == '*') ||
+        (c == '/');
+}
+
+struct sexpr* read_symbol(const char** str)
+{
+    if ((*str) == '\0')
+        return NULL;
+
+    if (is_digit(**str))
+        return NULL; 
+
+    char* name = malloc(MAX_SYMBOL_NAME);
+    memset(name, '\0', MAX_SYMBOL_NAME);
+
+    for (int i=0;i<MAX_SYMBOL_NAME-1;i++)
     {
-        case '+': case '-': case '*': case '/':
+        if (is_symbol_character(**str))
         {
-            struct sexpr* e = new_sexpr(operator);
-            e->operator = (*str)[0];
+            name[i] = **str;
             (*str)++;
-            return e;
         }
-        default:
-            return NULL;
     }
+
+    struct sexpr* e = new_sexpr(symbol);
+    e->symbol = name;
+
+    return e;
 }
 
 struct sexpr* read_list(const char** str)
@@ -118,14 +205,23 @@ struct sexpr* read_sexpr(const char** str)
 {
     struct sexpr* e = NULL;
 
+    // Skip spaces
+    if ((**str) == ' ')
+    {
+        (*str)++;
+        return read_sexpr(str);
+    }
+
     if ((e = read_integer(str)))
         return e;
-    else if ((e = read_operator(str)))
+
+    if ((e = read_list(str)))
         return e;
-    else if ((e = read_list(str)))
+
+    if ((e = read_symbol(str)))
         return e;
-    else
-        return NULL; // TODO: ERROR
+
+    return new_error("Syntax error");
 }
 
 int as_integer(struct sexpr* e)
@@ -136,29 +232,30 @@ int as_integer(struct sexpr* e)
         return 0; // Error?
 }
 
-struct sexpr* eval_sexpr(struct sexpr* sexpr);
+struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
 
-struct sexpr* eval_operator(struct sexpr* list)
+struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* args)
 {
-    char op = list->list.head->operator;
+    char op = s->name[0];
 
     int result = 0;
     if (op == '*' || op == '/')
         result = 1;
 
-    list = list->list.tail;
-
-    while (list)
+    while (args)
     {
-        int arg = as_integer(eval_sexpr(list->list.head));
+        struct sexpr* arg = eval_sexpr(env, args->list.head);
+        CHECK_ERROR(arg);
+
+        int value = as_integer(arg);
         switch (op)
         {
-            case '+': result += arg; break;
-            case '-': result -= arg; break;
-            case '*': result *= arg; break;
-            case '/': result /= arg; break;
+            case '+': result += value; break;
+            case '-': result -= value; break;
+            case '*': result *= value; break;
+            case '/': result /= value; break;
         }
-        list = list->list.tail;
+        args = args->list.tail;
     }
 
     struct sexpr* e = new_sexpr(integer);
@@ -166,16 +263,37 @@ struct sexpr* eval_operator(struct sexpr* list)
     return e;
 }
 
-struct sexpr* eval_sexpr(struct sexpr* sexpr)
+
+struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
     // Only lists are evaluated
     if (sexpr && sexpr->tag == list)
     {
-        return eval_operator(sexpr);
+        if (sexpr->list.head->tag != symbol)
+        {
+            return new_error("Encountered non symbol in list evaluation");
+        }
+        struct symbol* s = get_symbol(env, sexpr->list.head->symbol);
+
+        if (!s)
+        {
+            printf("Undefined symbol: %s\n", sexpr->list.head->symbol);
+            return new_error("Undefined symbol in expression");
+        }
+        
+        if (s->tag == function)
+        {
+            struct sexpr* args = sexpr->list.tail;
+            return s->function(env, s, args);
+        }
+        else
+        {
+            return s->value;
+        }
     }
     else
     {
-        return sexpr; 
+        return sexpr;
     }
 }
 
@@ -189,11 +307,14 @@ void print_sexpr(struct sexpr* sexpr)
     {
         switch (sexpr->tag)
         {
+        case error:
+            printf("Error: %s", sexpr->message);
+            break;
         case integer:
             printf("%d", sexpr->integer);
             break;
-        case operator:
-            printf("%c", sexpr->operator);
+        case symbol:
+            printf("%s", sexpr->symbol);
             break;
         case list:
             printf("(");
@@ -208,16 +329,28 @@ void print_sexpr(struct sexpr* sexpr)
             break;
         }
     }
+}
 
+void set_env(struct env* env)
+{
+    env->symbols = NULL;
+    env->symbol_count = 0;
+    add_function(env, "+", eval_operator);
+    add_function(env, "-", eval_operator);
+    add_function(env, "*", eval_operator);
+    add_function(env, "/", eval_operator);
 }
 
 int main()
 {
-    const char* input = "(+ 17 (* 10 5 2) (- 5))";
+    struct env env;
+    set_env(&env);
+
+    const char* input = "(/ 5 2)";
 
     struct sexpr* e = read_sexpr(&input);
     print_sexpr(e); printf("\n");
-    e = eval_sexpr(e);
+    e = eval_sexpr(&env, e);
     print_sexpr(e); printf("\n");
 
     return 0;
