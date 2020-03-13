@@ -242,7 +242,7 @@ struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* arg
     int result = 0;
     if (op == '*' || op == '/')
         result = 1;
-
+    bool first = true;
     while (args)
     {
         struct sexpr* arg = eval_sexpr(env, args->list.head);
@@ -254,9 +254,15 @@ struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* arg
             case '+': result += value; break;
             case '-': result -= value; break;
             case '*': result *= value; break;
-            case '/': result /= value; break;
+            case '/':
+                if (args->list.tail && first)
+                    result = value;
+                else
+                    result /= value;
+                break;
         }
         args = args->list.tail;
+        first = false;
     }
 
     struct sexpr* e = new_sexpr(integer);
