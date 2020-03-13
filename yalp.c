@@ -23,7 +23,7 @@ struct sexpr
             struct sexpr* tail;
         } list;
         int integer;
-        const char* symbol;
+        const char* name;
         const char* message;
     };    
 };
@@ -31,6 +31,8 @@ struct sexpr
 struct sexpr* new_sexpr(enum sexpr_t tag)
 {
     struct sexpr* e = malloc(sizeof(struct sexpr));
+    memset(e, 0, sizeof(struct sexpr));
+
     e->tag = tag;
 
     return e;
@@ -181,10 +183,10 @@ struct sexpr* read_symbol(const char** str)
         }
     }
 
-    struct sexpr* e = new_sexpr(symbol);
-    e->symbol = name;
+    struct sexpr* s = new_sexpr(symbol);
+    s->name = name;
 
-    return e;
+    return s;
 }
 struct sexpr* create_list(int element_count, ...)
 {
@@ -218,7 +220,7 @@ struct sexpr* read_quote(const char** str)
         (*str)++;
         
         struct sexpr* s = new_sexpr(symbol);
-        s->symbol = "quote";
+        s->name = "quote";
         struct sexpr* sexpr = read_sexpr(str);
         return create_list(2, s, sexpr);        
     }
@@ -297,7 +299,29 @@ int as_integer(struct sexpr* e)
         return 0; // Error?
 }
 
+bool as_bool(struct sexpr* e)
+{
+    switch (e->tag)
+    {
+        case integer:
+            return e->integer != 0;
+        default:
+            return false;
+    }
+}
+
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
+struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
+
+struct sexpr* eval_if(struct env* env, struct symbol* s, struct sexpr* args)
+{
+    struct sexpr* cond = eval_argument(env, args, 0);
+
+    if (as_bool(cond))
+        return eval_argument(env, args, 1);
+    else
+        return eval_argument(env, args, 2);
+}
 
 struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* args)
 {
@@ -378,11 +402,11 @@ struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
 
 struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
 {
-    struct sexpr* name = args->list.head;
+    struct sexpr* sym = args->list.head;
 
-    CHECK_ERROR(name);
+    CHECK_ERROR(sym);
 
-    if (name->tag != symbol)
+    if (sym->tag != symbol)
     {
         return new_error("Argument not evaluated to symbol");
     }
@@ -391,11 +415,10 @@ struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
 
     CHECK_ERROR(value);
 
-    add_env_value(env, name->symbol, value);
+    add_env_value(env, sym->name, value);
 
     return value;
 }
-
 
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
@@ -406,11 +429,11 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
         {
             return new_error("Encountered non symbol in list evaluation");
         }
-        struct symbol* s = get_env_symbol(env, sexpr->list.head->symbol);
+        struct symbol* s = get_env_symbol(env, sexpr->list.head->name);
 
         if (!s)
         {
-            printf("Undefined symbol: %s\n", sexpr->list.head->symbol);
+            printf("Undefined symbol: %s\n", sexpr->list.head->name);
             return new_error("Undefined symbol in expression");
         }
         
@@ -426,10 +449,10 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
     }
     else if (sexpr && sexpr->tag == symbol)
     {
-        struct symbol* s = get_env_symbol(env, sexpr->symbol);
+        struct symbol* s = get_env_symbol(env, sexpr->name);
         if (!s)
         {
-            printf("Unknown symbol: %s\n", sexpr->symbol);
+            printf("Unknown symbol: %s\n", sexpr->name);
             return new_error("Unknown symbol");
         }
         else if(s->tag == value)
@@ -465,7 +488,7 @@ void print_sexpr(struct sexpr* sexpr)
             printf("%d", sexpr->integer);
             break;
         case symbol:
-            printf("%s", sexpr->symbol);
+            printf("%s", sexpr->name);
             break;
         case list:
             printf("(");
@@ -494,6 +517,7 @@ void set_env(struct env* env)
     add_env_function(env, "quote", eval_quote);
     add_env_function(env, "list", eval_list);
     add_env_function(env, "define", eval_define);
+    add_env_function(env, "if", eval_if);
 }
 
 void getline(char* buff, size_t size)
