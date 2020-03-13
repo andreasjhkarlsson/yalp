@@ -275,6 +275,29 @@ struct sexpr* eval_quote(struct env* env, struct symbol* s, struct sexpr* args)
     return args->list.head; // Quote returns the unevaluated first argument
 }
 
+struct sexpr* eval_list(struct env* env, struct symbol* s, struct sexpr* args)
+{
+    if (!args)
+        return NULL;
+    struct sexpr* head = new_sexpr(list);
+    struct sexpr* previous = NULL;
+
+    while (args)
+    {
+        struct sexpr* cell = new_sexpr(list);
+        cell->list.head = eval_sexpr(env, args->list.head);
+        cell->list.tail = NULL;
+        if (previous)
+            previous->list.tail = cell;
+        else
+            head = cell;
+        previous = cell;
+        args = args->list.tail;
+    }
+
+    return head;
+}
+
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
     // Only lists are evaluated
@@ -352,6 +375,7 @@ void set_env(struct env* env)
     add_function(env, "/", eval_operator);
     add_function(env, "'", eval_quote);
     add_function(env, "quote", eval_quote);
+    add_function(env, "list", eval_list);
 }
 
 int main()
