@@ -135,7 +135,8 @@ bool is_symbol_character(char c)
         (c == '+') ||
         (c == '-') ||
         (c == '*') ||
-        (c == '/');
+        (c == '/') ||
+        (c == '\'');
 }
 
 struct sexpr* read_symbol(const char** str)
@@ -263,6 +264,10 @@ struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* arg
     return e;
 }
 
+struct sexpr* eval_quote(struct env* env, struct symbol* s, struct sexpr* args)
+{
+    return args->list.head; // Quote returns the unevaluated first argument
+}
 
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
@@ -339,6 +344,8 @@ void set_env(struct env* env)
     add_function(env, "-", eval_operator);
     add_function(env, "*", eval_operator);
     add_function(env, "/", eval_operator);
+    add_function(env, "'", eval_quote);
+    add_function(env, "quote", eval_quote);
 }
 
 int main()
