@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdarg.h>
 
 enum sexpr_t
 {
@@ -71,7 +72,7 @@ struct env
     int symbol_count;
 };
 
-struct symbol* get_symbol(struct env* env, const char* name)
+struct symbol* get_env_symbol(struct env* env, const char* name)
 {
     for(int i=0;i<env->symbol_count;i++)
     {
@@ -82,20 +83,29 @@ struct symbol* get_symbol(struct env* env, const char* name)
     return NULL;
 }
 
-void add_symbol(struct env* env, struct symbol* symbol)
+void add_env_symbol(struct env* env, struct symbol* symbol)
 {
     env->symbols = realloc(env->symbols, env->symbol_count+1);
     env->symbol_count += 1;
     env->symbols[env->symbol_count-1] = symbol;
 }
 
-void add_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct symbol*, struct sexpr*))
+void add_env_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct symbol*, struct sexpr*))
 {
     struct symbol* s = malloc(sizeof(struct symbol));
     s->tag = function;
     strcpy(s->name, name);
     s->function = fn;
-    add_symbol(env, s);
+    add_env_symbol(env, s);
+}
+
+void add_env_value(struct env* env, const char* name, struct sexpr* val)
+{
+    struct symbol* s = malloc(sizeof(struct symbol));
+    s->tag = value;
+    strcpy(s->name, name);
+    s->value = val;
+    add_env_symbol(env, s);    
 }
 
 struct sexpr* read_sexpr(const char** str);
@@ -131,12 +141,16 @@ bool is_symbol_character(char c)
         (c >= 'a' && c <= 'z') ||
         (c >= 'A' && c <= 'Z') ||
         (c >= '0' && c <= '9') ||
-        (c == '_') ||
+        (c == '_');
+}
+
+bool is_operator(char c)
+{   
+    return         
         (c == '+') ||
         (c == '-') ||
         (c == '*') ||
-        (c == '/') ||
-        (c == '\'');
+        (c == '/');
 }
 
 struct sexpr* read_symbol(const char** str)
@@ -150,12 +164,20 @@ struct sexpr* read_symbol(const char** str)
     char* name = malloc(MAX_SYMBOL_NAME);
     memset(name, '\0', MAX_SYMBOL_NAME);
 
-    for (int i=0;i<MAX_SYMBOL_NAME-1;i++)
+    if (is_operator(**str))
     {
-        if (is_symbol_character(**str))
+        name[0] = **str;
+        (*str)++;
+    }
+    else
+    {
+        for (int i=0;i<MAX_SYMBOL_NAME-1;i++)
         {
-            name[i] = **str;
-            (*str)++;
+            if (is_symbol_character(**str))
+            {
+                name[i] = **str;
+                (*str)++;
+            }
         }
     }
 
@@ -163,6 +185,45 @@ struct sexpr* read_symbol(const char** str)
     e->symbol = name;
 
     return e;
+}
+struct sexpr* create_list(int element_count, ...)
+{
+    struct sexpr* head = NULL;
+    struct sexpr* previous = NULL;
+    va_list valist;
+    va_start(valist, element_count); 
+
+    for (int i=0;i<element_count;i++)
+    {
+        struct sexpr* element = va_arg(valist, struct sexpr*);
+        struct sexpr* cell = new_sexpr(list);
+        cell->list.head = element;
+        if (previous)
+            previous->list.tail = cell;
+        else
+            head = cell;
+
+        previous = cell;
+    }
+
+    va_end(valist); 
+    
+    return head;
+}
+
+struct sexpr* read_quote(const char** str)
+{
+    if (**str == '\'')
+    {
+        (*str)++;
+        
+        struct sexpr* s = new_sexpr(symbol);
+        s->symbol = "quote";
+        struct sexpr* sexpr = read_sexpr(str);
+        return create_list(2, s, sexpr);        
+    }
+
+    return NULL;
 }
 
 struct sexpr* read_list(const char** str)
@@ -205,7 +266,7 @@ struct sexpr* read_list(const char** str)
 struct sexpr* read_sexpr(const char** str)
 {
     struct sexpr* e = NULL;
-
+    
     // Skip spaces
     if ((**str) == ' ')
     {
@@ -217,6 +278,9 @@ struct sexpr* read_sexpr(const char** str)
         return e;
 
     if ((e = read_list(str)))
+        return e;
+
+    if ((e = read_quote(str)))
         return e;
 
     if ((e = read_symbol(str)))
@@ -298,6 +362,41 @@ struct sexpr* eval_list(struct env* env, struct symbol* s, struct sexpr* args)
     return head;
 }
 
+struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
+{
+    struct sexpr* e = args;
+    while (n-- > 0)
+    {
+        e = e->list.tail;
+    }
+
+    if (e)
+        return eval_sexpr(env,e->list.head);
+    else
+        return NULL;
+}
+
+struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
+{
+    struct sexpr* name = args->list.head;
+
+    CHECK_ERROR(name);
+
+    if (name->tag != symbol)
+    {
+        return new_error("Argument not evaluated to symbol");
+    }
+
+    struct sexpr* value = eval_argument(env, args, 1);
+
+    CHECK_ERROR(value);
+
+    add_env_value(env, name->symbol, value);
+
+    return value;
+}
+
+
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
     // Only lists are evaluated
@@ -307,7 +406,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
         {
             return new_error("Encountered non symbol in list evaluation");
         }
-        struct symbol* s = get_symbol(env, sexpr->list.head->symbol);
+        struct symbol* s = get_env_symbol(env, sexpr->list.head->symbol);
 
         if (!s)
         {
@@ -324,6 +423,24 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
         {
             return s->value;
         }
+    }
+    else if (sexpr && sexpr->tag == symbol)
+    {
+        struct symbol* s = get_env_symbol(env, sexpr->symbol);
+        if (!s)
+        {
+            printf("Unknown symbol: %s\n", sexpr->symbol);
+            return new_error("Unknown symbol");
+        }
+        else if(s->tag == value)
+        {
+            return s->value;
+        }
+        else
+        {
+            return sexpr; // TODO: Return function
+        }
+        
     }
     else
     {
@@ -369,26 +486,56 @@ void set_env(struct env* env)
 {
     env->symbols = NULL;
     env->symbol_count = 0;
-    add_function(env, "+", eval_operator);
-    add_function(env, "-", eval_operator);
-    add_function(env, "*", eval_operator);
-    add_function(env, "/", eval_operator);
-    add_function(env, "'", eval_quote);
-    add_function(env, "quote", eval_quote);
-    add_function(env, "list", eval_list);
+    add_env_function(env, "+", eval_operator);
+    add_env_function(env, "-", eval_operator);
+    add_env_function(env, "*", eval_operator);
+    add_env_function(env, "/", eval_operator);
+    add_env_function(env, "'", eval_quote);
+    add_env_function(env, "quote", eval_quote);
+    add_env_function(env, "list", eval_list);
+    add_env_function(env, "define", eval_define);
 }
+
+void getline(char* buff, size_t size)
+{
+    memset(buff, '\0', size);
+    for(int i=0;i<size-1;)
+    {
+        int data = getchar();
+        if (data == EOF)
+            return;
+        if (data == '\r')
+            continue;
+        if (data == '\n')
+            return;
+        buff[i++] = data;
+    }
+}
+
 
 int main()
 {
     struct env env;
     set_env(&env);
 
-    const char* input = "(/ 5 2)";
+    while (true)
+    {
+        char line[4096];
+        printf("> "); getline(line, 4096);
 
-    struct sexpr* e = read_sexpr(&input);
-    print_sexpr(e); printf("\n");
-    e = eval_sexpr(&env, e);
-    print_sexpr(e); printf("\n");
+        const char* input = line;
+
+        struct sexpr* e = read_sexpr(&input);
+
+        if (e->tag == error)
+        {
+            printf("Error: %s", e->message);
+            continue;
+        }
+
+        e = eval_sexpr(&env, e);
+        printf("< "); print_sexpr(e); printf("\n");
+    }
 
     return 0;
 }
