@@ -87,7 +87,7 @@ struct symbol* get_env_symbol(struct env* env, const char* name)
 
 void add_env_symbol(struct env* env, struct symbol* symbol)
 {
-    env->symbols = realloc(env->symbols, env->symbol_count+1);
+    env->symbols = realloc(env->symbols, sizeof(struct symbol) * (env->symbol_count+1));
     env->symbol_count += 1;
     env->symbols[env->symbol_count-1] = symbol;
 }
@@ -157,7 +157,7 @@ bool is_operator(char c)
 
 struct sexpr* read_symbol(const char** str)
 {
-    if ((*str) == '\0')
+    if ((**str) == '\0')
         return NULL;
 
     if (is_digit(**str))
@@ -520,7 +520,7 @@ void set_env(struct env* env)
     add_env_function(env, "if", eval_if);
 }
 
-void getline(char* buff, size_t size)
+void readline(char* buff, size_t size)
 {
     memset(buff, '\0', size);
     for(int i=0;i<size-1;)
@@ -545,7 +545,7 @@ int main()
     while (true)
     {
         char line[4096];
-        printf("> "); getline(line, 4096);
+        printf("> "); readline(line, 4096);
 
         const char* input = line;
 
