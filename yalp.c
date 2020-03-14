@@ -10,8 +10,17 @@ enum sexpr_t
     error,
     list,
     integer,
-    symbol
+    symbol,
+    function
 };
+
+enum function_t
+{
+    builtin,
+    userdef
+};
+
+struct env;
 
 struct sexpr
 {
@@ -26,6 +35,19 @@ struct sexpr
         int integer;
         const char* name;
         const char* message;
+        struct
+        {
+            enum function_t tag;
+            union
+            {
+                struct sexpr* (*builtin) (struct env*, struct sexpr*);
+                struct 
+                {
+                    struct sexpr* args;
+                    struct sexpr* expr;
+                } userdefined;
+            };
+        } function;
     };    
 } _NIL = { .tag = nil };
 
@@ -48,69 +70,56 @@ struct sexpr* new_error(const char* message)
     return e;
 }
 
-#define CHECK_ERROR(expr) if (expr && expr->tag == error) return expr;
+#define CHECK_ERROR(expr) if (!expr || expr->tag == error) return expr;
 
 #define MAX_SYMBOL_NAME 64
 
-enum symbol_type
-{
-    function,
-    value
-};
 
-struct env;
-
-struct symbol
+struct symbol_mapping
 {
-    char name [MAX_SYMBOL_NAME];
-    enum symbol_type tag;
-    union 
-    {
-        struct sexpr* (*function) (struct env* env, struct symbol*, struct sexpr*);
-        struct sexpr* value;
-    };
+    struct sexpr* symbol;
+    struct sexpr* value;
 };
 
 struct env
 {
-    struct symbol** symbols;
+    struct symbol_mapping* symbols;
     int symbol_count;
 };
 
-struct symbol* get_env_symbol(struct env* env, const char* name)
+struct sexpr* get_env_symbol(struct env* env, const char* name)
 {
     for(int i=0;i<env->symbol_count;i++)
     {
-        if (strcmp(env->symbols[i]->name, name) == 0)
-            return env->symbols[i];
+        if (strcmp(env->symbols[i].symbol->name, name) == 0)
+            return env->symbols[i].value;
     }
 
     return NULL;
 }
 
-void add_env_symbol(struct env* env, struct symbol* symbol)
+void add_env_symbol(struct env* env, struct symbol_mapping mapping)
 {
-    env->symbols = realloc(env->symbols, sizeof(struct symbol) * (env->symbol_count+1));
+    env->symbols = realloc(env->symbols, sizeof(struct symbol_mapping) * (env->symbol_count+1));
     env->symbol_count += 1;
-    env->symbols[env->symbol_count-1] = symbol;
-}
-
-void add_env_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct symbol*, struct sexpr*))
-{
-    struct symbol* s = malloc(sizeof(struct symbol));
-    s->tag = function;
-    strcpy(s->name, name);
-    s->function = fn;
-    add_env_symbol(env, s);
+    env->symbols[env->symbol_count-1] = mapping;
 }
 
 void add_env_value(struct env* env, const char* name, struct sexpr* val)
 {
-    struct symbol* s = malloc(sizeof(struct symbol));
-    s->tag = value;
+    struct sexpr* s = new_sexpr(symbol);
+    s->name = (const char*)malloc(MAX_SYMBOL_NAME);
     strcpy(s->name, name);
-    s->value = val;
-    add_env_symbol(env, s);    
+
+    add_env_symbol(env, (struct symbol_mapping){.symbol = s, .value = val}); 
+}
+
+void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
+{
+    struct sexpr* v = new_sexpr(function);
+    v->function.builtin = fn;
+
+    add_env_value(env, name, v);
 }
 
 struct sexpr* read_sexpr(const char** str);
@@ -323,7 +332,7 @@ bool as_bool(struct sexpr* e)
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
 struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
 
-struct sexpr* eval_if(struct env* env, struct symbol* s, struct sexpr* args)
+struct sexpr* eval_if(struct env* env, struct sexpr* args)
 {
     struct sexpr* cond = eval_argument(env, args, 0);
 
@@ -333,9 +342,8 @@ struct sexpr* eval_if(struct env* env, struct symbol* s, struct sexpr* args)
         return eval_argument(env, args, 2);
 }
 
-struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* args)
+struct sexpr* eval_operator(char op, struct env* env, struct sexpr* args)
 {
-    char op = s->name[0];
 
     int result = 0;
     if (op == '*' || op == '/')
@@ -368,12 +376,32 @@ struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* arg
     return e;
 }
 
-struct sexpr* eval_quote(struct env* env, struct symbol* s, struct sexpr* args)
+struct sexpr* eval_add(struct env* env, struct sexpr* args)
+{
+    return eval_operator('+', env, args);
+}
+
+struct sexpr* eval_subtract(struct env* env, struct sexpr* args)
+{
+    return eval_operator('-', env, args);
+}
+
+struct sexpr* eval_multiply(struct env* env, struct sexpr* args)
+{
+    return eval_operator('*', env, args);
+}
+
+struct sexpr* eval_division(struct env* env, struct sexpr* args)
+{
+    return eval_operator('/', env, args);
+}
+
+struct sexpr* eval_quote(struct env* env, struct sexpr* args)
 {
     return args->list.head; // Quote returns the unevaluated first argument
 }
 
-struct sexpr* eval_list(struct env* env, struct symbol* s, struct sexpr* args)
+struct sexpr* eval_list(struct env* env, struct sexpr* args)
 {
     struct sexpr* head = NIL;
     struct sexpr* previous = NULL;
@@ -408,7 +436,7 @@ struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
         return NIL;
 }
 
-struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
+struct sexpr* eval_define(struct env* env, struct sexpr* args)
 {
     struct sexpr* sym = args->list.head;
 
@@ -437,41 +465,42 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
         {
             return new_error("Encountered non symbol in list evaluation");
         }
-        struct symbol* s = get_env_symbol(env, sexpr->list.head->name);
+        struct sexpr* value = get_env_symbol(env, sexpr->list.head->name);
 
-        if (!s)
+        if (!value)
         {
             printf("Undefined symbol: %s\n", sexpr->list.head->name);
             return new_error("Undefined symbol in expression");
         }
         
-        if (s->tag == function)
+        if (value->tag == function)
         {
             struct sexpr* args = sexpr->list.tail;
-            return s->function(env, s, args);
+            switch (value->function.tag)
+            {
+                case builtin:
+                    return value->function.builtin(env, args);
+                case userdef:
+                    return new_error("Not implemented");
+            }
         }
         else
         {
-            return s->value;
+            return value;
         }
     }
     else if (sexpr->tag == symbol)
     {
-        struct symbol* s = get_env_symbol(env, sexpr->name);
-        if (!s)
+        struct sexpr* value = get_env_symbol(env, sexpr->name);
+        if (!value)
         {
             printf("Unknown symbol: %s\n", sexpr->name);
             return new_error("Unknown symbol");
         }
-        else if(s->tag == value)
-        {
-            return s->value;
-        }
         else
         {
-            return sexpr; // TODO: Return function
+            return value;
         }
-        
     }
     else
     {
@@ -495,6 +524,9 @@ void print_sexpr(struct sexpr* sexpr)
     case symbol:
         printf("%s", sexpr->name);
         break;
+    case function:
+        printf("<function>");
+        break;
     case list:
         printf("(");
         while (sexpr != NIL)
@@ -513,15 +545,15 @@ void set_env(struct env* env)
 {
     env->symbols = NULL;
     env->symbol_count = 0;
-    add_env_function(env, "+", eval_operator);
-    add_env_function(env, "-", eval_operator);
-    add_env_function(env, "*", eval_operator);
-    add_env_function(env, "/", eval_operator);
-    add_env_function(env, "'", eval_quote);
-    add_env_function(env, "quote", eval_quote);
-    add_env_function(env, "list", eval_list);
-    add_env_function(env, "define", eval_define);
-    add_env_function(env, "if", eval_if);
+    add_env_builtin_function(env, "+", eval_add);
+    add_env_builtin_function(env, "-", eval_subtract);
+    add_env_builtin_function(env, "*", eval_multiply);
+    add_env_builtin_function(env, "/", eval_define);
+    add_env_builtin_function(env, "'", eval_quote);
+    add_env_builtin_function(env, "quote", eval_quote);
+    add_env_builtin_function(env, "list", eval_list);
+    add_env_builtin_function(env, "define", eval_define);
+    add_env_builtin_function(env, "if", eval_if);
 }
 
 void readline(char* buff, size_t size, bool* eof)
