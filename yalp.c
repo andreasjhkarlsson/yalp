@@ -120,6 +120,16 @@ bool is_digit(char c)
     return c >= '0' && c <= '9';
 }
 
+bool is_whitespace(char c)
+{
+    return c == ' ' || c == '\r' || c == '\n' || c == '\t';
+}
+
+void skip_whitespace(const char** str)
+{
+    for (;(**str) != '\0' && is_whitespace(**str); (*str)++);
+}
+
 struct sexpr* read_integer(const char** str)
 {
     if (is_digit(**str))
@@ -274,11 +284,7 @@ struct sexpr* read_sexpr(const char** str)
     struct sexpr* e = NULL;
     
     // Skip spaces
-    if ((**str) == ' ')
-    {
-        (*str)++;
-        return read_sexpr(str);
-    }
+    skip_whitespace(str);
 
     if ((e = read_integer(str)))
         return e;
@@ -518,14 +524,18 @@ void set_env(struct env* env)
     add_env_function(env, "if", eval_if);
 }
 
-void readline(char* buff, size_t size)
+void readline(char* buff, size_t size, bool* eof)
 {
     memset(buff, '\0', size);
     for(int i=0;i<size-1;)
     {
         int data = getchar();
         if (data == EOF)
+        {
+            if (eof)
+                *eof = true;
             return;
+        }
         if (data == '\r')
             continue;
         if (data == '\n')
@@ -540,18 +550,30 @@ int main()
     struct env env;
     set_env(&env);
 
-    while (true)
+    bool eof = false;
+
+    while (!eof)
     {
         char line[4096];
-        printf("> "); readline(line, 4096);
-
+        printf("> "); readline(line, 4096, &eof);
         const char* input = line;
+
+        skip_whitespace(&input);
+
+        if (input[0] == '\0')
+            continue;
 
         struct sexpr* e = read_sexpr(&input);
 
-        if (e->tag == error)
+        if (*input != '\0')
         {
-            printf("Error: %s", e->message);
+            printf("Error: unparsed content in string: %s\n", input);
+            continue;
+        }
+
+        if (!e || e->tag == error)
+        {
+            printf("Error: %s\n", e->message);
             continue;
         }
 
