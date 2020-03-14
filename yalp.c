@@ -17,7 +17,7 @@ enum sexpr_t
 enum function_t
 {
     builtin,
-    userdef
+    lambda
 };
 
 struct env;
@@ -43,9 +43,9 @@ struct sexpr
                 struct sexpr* (*builtin) (struct env*, struct sexpr*);
                 struct 
                 {
-                    struct sexpr* args;
+                    struct sexpr* params;
                     struct sexpr* expr;
-                } userdefined;
+                } lambda;
             };
         } function;
     };    
@@ -60,6 +60,13 @@ struct sexpr* const new_sexpr(enum sexpr_t tag)
 
     e->tag = tag;
 
+    return e;
+}
+
+struct sexpr* const new_function(enum function_t tag)
+{
+    struct sexpr* e = new_sexpr(function);
+    e->function.tag = tag;
     return e;
 }
 
@@ -91,7 +98,7 @@ struct sexpr* get_env_symbol(struct env* env, const char* name)
 {
     for(int i=0;i<env->symbol_count;i++)
     {
-        if (strcmp(env->symbols[i].symbol->name, name) == 0)
+        if (env->symbols[i].symbol && strcmp(env->symbols[i].symbol->name, name) == 0)
             return env->symbols[i].value;
     }
 
@@ -100,6 +107,15 @@ struct sexpr* get_env_symbol(struct env* env, const char* name)
 
 void add_env_symbol(struct env* env, struct symbol_mapping mapping)
 {
+    // Try reusing a free spot
+    for (int i=0;i<env->symbol_count;i++)
+    {
+        if (env->symbols[i].symbol == NULL)
+        {
+            env->symbols[i] = mapping;
+            return;
+        }
+    }
     env->symbols = realloc(env->symbols, sizeof(struct symbol_mapping) * (env->symbol_count+1));
     env->symbol_count += 1;
     env->symbols[env->symbol_count-1] = mapping;
@@ -114,9 +130,40 @@ void add_env_value(struct env* env, const char* name, struct sexpr* val)
     add_env_symbol(env, (struct symbol_mapping){.symbol = s, .value = val}); 
 }
 
+void remove_env_value(struct env* env, const char* name)
+{
+    for(int i=0;i<env->symbol_count;i++)
+    {
+        struct symbol_mapping* mapping = &env->symbols[i];
+        if (mapping->symbol && strcmp(mapping->symbol->name, name) == 0)
+        {
+            mapping->symbol = NULL;
+            mapping->value = NULL;
+            return;
+        }
+    }
+}
+
+struct sexpr* next(struct sexpr** list)
+{
+    if (*list == NIL)
+        return NULL;
+
+    struct sexpr* element = (*list)->list.head;
+    *list =(*list)->list.tail;
+    return element;
+}
+
+int list_length(struct sexpr* list)
+{
+    int count = 0;
+    while (next(&list)) count++;
+    return count;
+}
+
 void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
 {
-    struct sexpr* v = new_sexpr(function);
+    struct sexpr* v = new_function(builtin);
     v->function.builtin = fn;
 
     add_env_value(env, name, v);
@@ -332,6 +379,38 @@ bool as_bool(struct sexpr* e)
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
 struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
 
+struct sexpr* eval_lambda(struct env* env, struct sexpr* args)
+{
+    struct sexpr* params = args->list.head;
+    struct sexpr* body = args->list.tail->list.head;
+
+    struct sexpr* sexpr = new_function(lambda);
+    sexpr->function.lambda.params = params;
+    sexpr->function.lambda.expr = body;
+
+    return sexpr;
+}
+
+struct sexpr* eval_defun(struct env* env, struct sexpr* args)
+{
+    struct sexpr* s = args->list.head;
+
+    CHECK_ERROR(s);
+
+    if (s->tag != symbol)
+    {
+        return new_error("First argument to defun must be symbol");
+    }
+
+    struct sexpr* lambda = eval_lambda(env, args->list.tail);
+
+    CHECK_ERROR(lambda);
+
+    add_env_value(env, s->name, lambda);
+
+    return lambda;
+}
+
 struct sexpr* eval_if(struct env* env, struct sexpr* args)
 {
     struct sexpr* cond = eval_argument(env, args, 0);
@@ -406,17 +485,17 @@ struct sexpr* eval_list(struct env* env, struct sexpr* args)
     struct sexpr* head = NIL;
     struct sexpr* previous = NULL;
 
-    while (args != NIL)
+    struct sexpr* el;
+    while ((el = next(&args)))
     {
         struct sexpr* cell = new_sexpr(list);
-        cell->list.head = eval_sexpr(env, args->list.head);
+        cell->list.head = eval_sexpr(env, el);
         cell->list.tail = NIL;
         if (previous)
             previous->list.tail = cell;
         else
             head = cell;
         previous = cell;
-        args = args->list.tail;
     }
 
     return head;
@@ -424,14 +503,11 @@ struct sexpr* eval_list(struct env* env, struct sexpr* args)
 
 struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
 {
-    struct sexpr* e = args;
     while (n-- > 0)
-    {
-        e = e->list.tail;
-    }
+        next(&args);
 
-    if (e != NIL)
-        return eval_sexpr(env,e->list.head);
+    if (args != NIL)
+        return eval_sexpr(env,args->list.head);
     else
         return NIL;
 }
@@ -456,22 +532,45 @@ struct sexpr* eval_define(struct env* env, struct sexpr* args)
     return value;
 }
 
+struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* args)
+{
+    struct sexpr* params = lambda->function.lambda.params;
+    struct sexpr* body = lambda->function.lambda.expr;
+
+    // Iterate over and bind parameters
+    struct sexpr* param;
+    int pos = 0;
+    while (param = next(&params))
+    {
+        struct sexpr* arg = eval_argument(env, args, pos);
+
+        if (!arg)
+        {
+            return new_error("Not enough arguments for lambda function");
+        }
+
+        add_env_value(env, param->name, arg);
+        pos++;
+    }
+
+    struct sexpr* result = eval_sexpr(env, body);
+
+    // Iterate over parameters again to unbind them
+    params = lambda->function.lambda.params;
+    while (param = next(&params))
+    {
+        remove_env_value(env, param->name);
+    }
+
+    return result;
+}
+
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
     // Only lists are evaluated
     if (sexpr->tag == list)
     {
-        if (sexpr->list.head->tag != symbol)
-        {
-            return new_error("Encountered non symbol in list evaluation");
-        }
-        struct sexpr* value = get_env_symbol(env, sexpr->list.head->name);
-
-        if (!value)
-        {
-            printf("Undefined symbol: %s\n", sexpr->list.head->name);
-            return new_error("Undefined symbol in expression");
-        }
+        struct sexpr* value = eval_sexpr(env, sexpr->list.head);
         
         if (value->tag == function)
         {
@@ -480,13 +579,13 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
             {
                 case builtin:
                     return value->function.builtin(env, args);
-                case userdef:
-                    return new_error("Not implemented");
+                case lambda:
+                    return call_lambda(env, value, args);
             }
         }
         else
         {
-            return value;
+            return new_error("Non function value found when evaluating list");
         }
     }
     else if (sexpr->tag == symbol)
@@ -525,7 +624,15 @@ void print_sexpr(struct sexpr* sexpr)
         printf("%s", sexpr->name);
         break;
     case function:
-        printf("<function>");
+        switch (sexpr->function.tag)
+        {
+            case builtin:
+                printf("<builtin function>"); // TODO: Try to get name
+                break;
+            case lambda:
+                printf("<lambda function>");
+                break;
+        }
         break;
     case list:
         printf("(");
@@ -554,6 +661,8 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "list", eval_list);
     add_env_builtin_function(env, "define", eval_define);
     add_env_builtin_function(env, "if", eval_if);
+    add_env_builtin_function(env, "lambda", eval_lambda);
+    add_env_builtin_function(env, "defun", eval_defun);
 }
 
 void readline(char* buff, size_t size, bool* eof)
