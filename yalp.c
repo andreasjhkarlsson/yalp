@@ -63,12 +63,21 @@ struct sexpr* const new_sexpr(enum sexpr_t tag)
     return e;
 }
 
-struct sexpr* const new_function(enum function_t tag)
+struct sexpr* new_function(enum function_t tag)
 {
     struct sexpr* e = new_sexpr(function);
     e->function.tag = tag;
     return e;
 }
+
+struct sexpr* new_symbol(const char* str, size_t length)
+{
+    struct sexpr* e = new_sexpr(symbol);
+    e->name = malloc(length + 1);
+    strncpy((char*)e->name, str, length);
+    ((char*)e->name)[length] = '\0';
+    return e;
+} 
 
 struct sexpr* new_error(const char* message)
 {
@@ -78,9 +87,6 @@ struct sexpr* new_error(const char* message)
 }
 
 #define CHECK_ERROR(expr) if (!expr || expr->tag == error) return expr;
-
-#define MAX_SYMBOL_NAME 64
-
 
 struct symbol_mapping
 {
@@ -123,9 +129,7 @@ void add_env_symbol(struct env* env, struct symbol_mapping mapping)
 
 void add_env_value(struct env* env, const char* name, struct sexpr* val)
 {
-    struct sexpr* s = new_sexpr(symbol);
-    s->name = (const char*)malloc(MAX_SYMBOL_NAME);
-    strcpy(s->name, name);
+    struct sexpr* s = new_symbol(name, strlen(name));
 
     add_env_symbol(env, (struct symbol_mapping){.symbol = s, .value = val}); 
 }
@@ -217,44 +221,46 @@ bool is_symbol_character(char c)
 
 bool is_operator(char c)
 {   
-    return         
-        (c == '+') ||
-        (c == '-') ||
-        (c == '*') ||
-        (c == '/');
+    switch(c)
+    {
+        case '+':
+        case '-':
+        case '*':
+        case '/':
+            return true;
+        default:
+            return false;
+    }
+}
+
+struct sexpr* read_operator(const char** str)
+{
+    if (is_operator(**str))
+    {
+        struct sexpr* s = new_symbol(*str, 1);
+        (*str)++;
+        return s;
+    }
+
+    return NULL;    
 }
 
 struct sexpr* read_symbol(const char** str)
 {
-    if ((**str) == '\0')
+    struct sexpr* s;
+    if (s = read_operator(str))
+        return s;
+
+    if (!is_symbol_character(**str) || is_digit(**str))
+    {
         return NULL;
-
-    if (is_digit(**str))
-        return NULL; 
-
-    char* name = malloc(MAX_SYMBOL_NAME);
-    memset(name, '\0', MAX_SYMBOL_NAME);
-
-    if (is_operator(**str))
-    {
-        name[0] = **str;
-        (*str)++;
-    }
-    else
-    {
-        for (int i=0;i<MAX_SYMBOL_NAME-1;i++)
-        {
-            if (is_symbol_character(**str))
-            {
-                name[i] = **str;
-                (*str)++;
-            }
-        }
     }
 
-    struct sexpr* s = new_sexpr(symbol);
-    s->name = name;
+    int count;
+    for (count = 0;is_symbol_character((*str)[count]);count++);
 
+    s = new_symbol(*str, count);
+    (*str) += count;
     return s;
 }
 struct sexpr* create_list(int element_count, ...)
@@ -306,13 +312,12 @@ struct sexpr* read_list(const char** str)
         struct sexpr* head = NIL;
         struct sexpr* previous = NULL;
         
-        while ((*str)[0] != ')')
+        while (true)
         {
-            if ((*str)[0] == ' ')
-            {
-                (*str)++;
-                continue;
-            }
+            skip_whitespace(str);
+            if ((*str)[0] == ')')
+                break;
+
             struct sexpr* cell = new_sexpr(list);
             cell->list.head = read_sexpr(str);
             cell->list.tail = NIL;
@@ -685,28 +690,96 @@ void readline(char* buff, size_t size, bool* eof)
     }
 }
 
+int paren_balance(const char* str)
+{
+    int balance = 0;
+    char c;
+    while((c = *(str++)) != '\0')
+    {
+        if (c == '(')
+            balance++;
+        else if (c == ')')
+            balance--;
+    }
+
+    return balance;
+}
+
+struct string_builder
+{
+    char* str;
+    int total_bytes;
+};
+
+void init_string_builder(struct string_builder *builder)
+{
+    static const size_t DEFAULT_SIZE = 64;
+    builder->str = (char*) malloc(DEFAULT_SIZE);
+    builder->total_bytes = DEFAULT_SIZE;
+    builder->str[0] = '\0';
+}
+
+void append_string_builder(struct string_builder* builder, const char* str)
+{
+    size_t current_length = strlen(builder->str);
+    size_t new_length = current_length + strlen(str) + 1;
+    if (new_length > builder->total_bytes)
+    {
+        builder->total_bytes *= 2;
+        builder->str = realloc(builder->str, builder->total_bytes);        
+    }
+
+    strncat(builder->str, str, new_length - current_length);
+}
+
+void reset_string_builder(struct string_builder* builder)
+{
+    builder->str[0] = '\0';
+}
+
+void free_string_builder(struct string_builder* builder)
+{
+    free(builder->str);
+}
+
 
 int main()
 {
     struct env env;
     set_env(&env);
 
+    struct string_builder input_builder;
+    init_string_builder(&input_builder);
+    
     bool eof = false;
 
     while (!eof)
     {
-        char line[4096];
-        printf("> "); readline(line, 4096, &eof);
-        const char* input = line;
+        static char buffer[4096];
+        printf("> ");
+        
+        reset_string_builder(&input_builder);
+        do
+        {
+            readline(buffer, 4096, &eof);
+            const char* line = buffer;
+        
+            skip_whitespace(&line);
 
-        skip_whitespace(&input);
+            append_string_builder(&input_builder, line);
+            append_string_builder(&input_builder, "\n");
+        } while(!eof && paren_balance(input_builder.str) > 0);
+
+        const char* input = input_builder.str;
 
         if (input[0] == '\0')
             continue;
 
         struct sexpr* e = read_sexpr(&input);
 
-        if (*input != '\0')
+        skip_whitespace(&input);
+
+        if (input[0] != '\0')
         {
             printf("Error: unparsed content in string: %s\n", input);
             continue;
@@ -721,6 +794,8 @@ int main()
         e = eval_sexpr(&env, e);
         printf("< "); print_sexpr(e); printf("\n");
     }
+
+    free_string_builder(&input_builder);
 
     return 0;
 }
