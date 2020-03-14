@@ -6,6 +6,7 @@
 
 enum sexpr_t
 {
+    nil,
     error,
     list,
     integer,
@@ -26,9 +27,11 @@ struct sexpr
         const char* name;
         const char* message;
     };    
-};
+} _NIL = { .tag = nil };
 
-struct sexpr* new_sexpr(enum sexpr_t tag)
+struct sexpr* NIL = &_NIL;
+
+struct sexpr* const new_sexpr(enum sexpr_t tag)
 {
     struct sexpr* e = malloc(sizeof(struct sexpr));
     memset(e, 0, sizeof(struct sexpr));
@@ -190,7 +193,7 @@ struct sexpr* read_symbol(const char** str)
 }
 struct sexpr* create_list(int element_count, ...)
 {
-    struct sexpr* head = NULL;
+    struct sexpr* head = NIL;
     struct sexpr* previous = NULL;
     va_list valist;
     va_start(valist, element_count); 
@@ -200,6 +203,7 @@ struct sexpr* create_list(int element_count, ...)
         struct sexpr* element = va_arg(valist, struct sexpr*);
         struct sexpr* cell = new_sexpr(list);
         cell->list.head = element;
+        cell->list.tail = NIL;
         if (previous)
             previous->list.tail = cell;
         else
@@ -233,7 +237,7 @@ struct sexpr* read_list(const char** str)
     if ((**str) == '(')
     {
         (*str)++;
-        struct sexpr* head = NULL;
+        struct sexpr* head = NIL;
         struct sexpr* previous = NULL;
         
         while ((*str)[0] != ')')
@@ -245,7 +249,7 @@ struct sexpr* read_list(const char** str)
             }
             struct sexpr* cell = new_sexpr(list);
             cell->list.head = read_sexpr(str);
-            cell->list.tail = NULL;
+            cell->list.tail = NIL;
 
             if (previous)
                 previous->list.tail = cell;
@@ -331,7 +335,7 @@ struct sexpr* eval_operator(struct env* env, struct symbol* s, struct sexpr* arg
     if (op == '*' || op == '/')
         result = 1;
     bool first = true;
-    while (args)
+    while (args != NIL)
     {
         struct sexpr* arg = eval_sexpr(env, args->list.head);
         CHECK_ERROR(arg);
@@ -365,16 +369,14 @@ struct sexpr* eval_quote(struct env* env, struct symbol* s, struct sexpr* args)
 
 struct sexpr* eval_list(struct env* env, struct symbol* s, struct sexpr* args)
 {
-    if (!args)
-        return NULL;
-    struct sexpr* head = new_sexpr(list);
+    struct sexpr* head = NIL;
     struct sexpr* previous = NULL;
 
-    while (args)
+    while (args != NIL)
     {
         struct sexpr* cell = new_sexpr(list);
         cell->list.head = eval_sexpr(env, args->list.head);
-        cell->list.tail = NULL;
+        cell->list.tail = NIL;
         if (previous)
             previous->list.tail = cell;
         else
@@ -394,10 +396,10 @@ struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
         e = e->list.tail;
     }
 
-    if (e)
+    if (e != NIL)
         return eval_sexpr(env,e->list.head);
     else
-        return NULL;
+        return NIL;
 }
 
 struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
@@ -423,7 +425,7 @@ struct sexpr* eval_define(struct env* env, struct symbol* s, struct sexpr* args)
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 {
     // Only lists are evaluated
-    if (sexpr && sexpr->tag == list)
+    if (sexpr->tag == list)
     {
         if (sexpr->list.head->tag != symbol)
         {
@@ -447,7 +449,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
             return s->value;
         }
     }
-    else if (sexpr && sexpr->tag == symbol)
+    else if (sexpr->tag == symbol)
     {
         struct symbol* s = get_env_symbol(env, sexpr->name);
         if (!s)
@@ -473,35 +475,31 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
 
 void print_sexpr(struct sexpr* sexpr)
 {
-    if (sexpr == NULL)
+    switch (sexpr->tag)
     {
+    case error:
+        printf("Error: %s", sexpr->message);
+        break;
+    case nil:
         printf("()");
-    }
-    else
-    {
-        switch (sexpr->tag)
+        break;
+    case integer:
+        printf("%d", sexpr->integer);
+        break;
+    case symbol:
+        printf("%s", sexpr->name);
+        break;
+    case list:
+        printf("(");
+        while (sexpr != NIL)
         {
-        case error:
-            printf("Error: %s", sexpr->message);
-            break;
-        case integer:
-            printf("%d", sexpr->integer);
-            break;
-        case symbol:
-            printf("%s", sexpr->name);
-            break;
-        case list:
-            printf("(");
-            while (sexpr)
-            {
-                print_sexpr(sexpr->list.head);
-                
-                if ((sexpr = sexpr->list.tail))
-                    printf(" ");
-            }
-            printf(")");
-            break;
+            print_sexpr(sexpr->list.head);
+            
+            if ((sexpr = sexpr->list.tail) != NIL)
+                printf(" ");
         }
+        printf(")");
+        break;
     }
 }
 
