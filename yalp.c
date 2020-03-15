@@ -11,6 +11,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
 struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
 struct sexpr* eval_type_argument(struct env* env, struct sexpr* args, int n, enum sexpr_t type);
 struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* args);
+struct sexpr* read_sexpr(const char** str);
 
 enum sexpr_t
 {
@@ -110,66 +111,147 @@ struct sexpr* new_error(const char* message)
     return e;
 }
 
+const char* copy_string(const char* str)
+{
+    char* copy = malloc(strlen(str) + 1);
+    strcpy(copy, str);
+    return copy;
+}
+
 #define CHECK_ERROR(expr) if (!expr || expr->tag == error) return expr;
 
-struct symbol_mapping
+struct binding
 {
-    struct sexpr* symbol;
+    const char* name;
     struct sexpr* value;
 };
 
-struct env
+struct frame
 {
-    struct symbol_mapping* symbols;
-    int symbol_count;
+    struct binding* bindings;
+    int binding_count;
+    struct frame* previous;
 };
 
-struct sexpr* get_env_symbol(struct env* env, const char* name)
+struct frame* create_frame()
 {
-    for(int i=0;i<env->symbol_count;i++)
+    struct frame* frame = malloc(sizeof(struct frame));
+    frame->bindings = NULL;
+    frame->binding_count = 0;
+    frame->previous = NULL;
+    return frame;
+}
+
+void remove_binding(struct frame* frame, const char* name, bool recursive)
+{
+    for(int i=0;i<frame->binding_count;i++)
     {
-        if (env->symbols[i].symbol && strcmp(env->symbols[i].symbol->name, name) == 0)
-            return env->symbols[i].value;
+        struct binding* binding = &frame->bindings[i];
+        if (binding->name && strcmp(binding->name, name) == 0)
+        {
+            free(binding->name);
+            binding->name = NULL;
+            binding->value = NULL;
+            return;
+        }
     }
+
+    if (frame->previous && recursive)
+        remove_binding(frame->previous, name, recursive);
+}
+
+void add_binding(struct frame* frame, const char* name, struct sexpr* value)
+{
+    // Try reusing a free spot
+    for (int i=0;i<frame->binding_count;i++)
+    {
+        struct binding* binding = &frame->bindings[i];
+        if (binding->name && strcmp(binding->name, name) == 0)
+        {
+            free(binding->name);
+            binding->name = NULL;
+            binding->value = NULL;
+        }
+        if (binding->name == NULL)
+        {
+            binding->name = copy_string(name);
+            binding->value = value;
+            return;
+        }
+    }
+
+    frame->bindings = realloc(frame->bindings, sizeof(struct binding) * (frame->binding_count+1));
+    frame->binding_count += 1;
+    frame->bindings[frame->binding_count-1].name = copy_string(name);
+    frame->bindings[frame->binding_count-1].value = value;
+}
+
+struct sexpr* get_binding(struct frame* frame, const char* name)
+{
+    for(int i=0;i<frame->binding_count;i++)
+    {
+        if (frame->bindings[i].name && strcmp(frame->bindings[i].name, name) == 0)
+            return frame->bindings[i].value;
+    }
+
+    if (frame->previous)
+        return get_binding(frame->previous, name);
 
     return NULL;
 }
 
-void add_env_symbol(struct env* env, struct symbol_mapping mapping)
+void free_frame(struct frame* frame)
 {
-    // Try reusing a free spot
-    for (int i=0;i<env->symbol_count;i++)
+    for (int i=0;i<frame->binding_count;i++)
     {
-        if (env->symbols[i].symbol == NULL)
-        {
-            env->symbols[i] = mapping;
-            return;
-        }
+        if (frame->bindings[i].name)
+            free(frame->bindings[i].name);
     }
-    env->symbols = realloc(env->symbols, sizeof(struct symbol_mapping) * (env->symbol_count+1));
-    env->symbol_count += 1;
-    env->symbols[env->symbol_count-1] = mapping;
+    free(frame);
 }
 
-void add_env_value(struct env* env, const char* name, struct sexpr* val)
+struct env
 {
-    struct sexpr* s = new_symbol(name, strlen(name));
+    struct frame* stack;
+};
 
-    add_env_symbol(env, (struct symbol_mapping){.symbol = s, .value = val}); 
+struct sexpr* get_env_binding(struct env* env, const char* name)
+{
+    return get_binding(env->stack, name);
 }
 
-void remove_env_value(struct env* env, const char* name)
+
+void add_env_binding(struct env* env, const char* name, struct sexpr* val)
 {
-    for(int i=0;i<env->symbol_count;i++)
-    {
-        struct symbol_mapping* mapping = &env->symbols[i];
-        if (mapping->symbol && strcmp(mapping->symbol->name, name) == 0)
-        {
-            mapping->symbol = NULL;
-            mapping->value = NULL;
-            return;
-        }
-    }
+    add_binding(env->stack, name, val);
+}
+
+void remove_env_binding(struct env* env, const char* name, bool recursive)
+{
+    remove_binding(env->stack, name, recursive);
+}
+
+void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
+{
+    struct sexpr* v = new_function(builtin);
+    v->function.builtin.name = copy_string(name);
+    v->function.builtin.fn = fn;
+
+    add_env_binding(env, name, v);
+}
+
+void push_stack_frame(struct env* env)
+{
+    struct frame* frame = create_frame();
+    frame->previous = env->stack;
+    env->stack = frame;
+}
+
+void pop_stack_frame(struct env* env)
+{
+    struct frame* new_top = env->stack->previous;
+    free_frame(env->stack);
+    env->stack = new_top;
 }
 
 struct sexpr* next(struct sexpr** list)
@@ -196,18 +278,6 @@ struct sexpr* reduce(struct sexpr* (*fn) (struct sexpr*, struct sexpr*), struct 
         state = fn(el, state);
     return state;
 }
-
-void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
-{
-    struct sexpr* v = new_function(builtin);
-    v->function.builtin.name = malloc(strlen(name) + 1);
-    strcpy(v->function.builtin.name, name);
-    v->function.builtin.fn = fn;
-
-    add_env_value(env, name, v);
-}
-
-struct sexpr* read_sexpr(const char** str);
 
 bool is_digit(char c)
 {
@@ -473,7 +543,7 @@ struct sexpr* eval_defun(struct env* env, struct sexpr* args)
 
     CHECK_ERROR(lambda);
 
-    add_env_value(env, s->name, lambda);
+    add_env_binding(env, s->name, lambda);
 
     return lambda;
 }
@@ -576,6 +646,16 @@ struct sexpr* eval_add(struct env* env, struct sexpr* args)
 struct sexpr* eval_subtract(struct env* env, struct sexpr* args)
 {
     int op(int a, int b) { return a - b; }
+    
+    if (args == NIL || args->list.tail == NIL)
+        return eval_int_operator(env, args, op, 0);
+    else
+    {
+        struct sexpr* first = eval_argument(env, args, 0);
+        CHECK_ERROR(first);
+        return eval_int_operator(env, args->list.tail, op, as_integer(first));
+    }
+
     return eval_int_operator(env, args, op, 0);
 }
 
@@ -660,7 +740,7 @@ struct sexpr* eval_define(struct env* env, struct sexpr* args)
 
     CHECK_ERROR(value);
 
-    add_env_value(env, sym->name, value);
+    add_env_binding(env, sym->name, value);
 
     return value;
 }
@@ -669,6 +749,8 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
 {
     struct sexpr* params = lambda->function.lambda.params;
     struct sexpr* body = lambda->function.lambda.expr;
+
+    push_stack_frame(env);
 
     // Iterate over and bind parameters
     struct sexpr* param;
@@ -679,21 +761,18 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
 
         if (!arg)
         {
+            pop_stack_frame(env);
             return new_error("Not enough arguments for lambda function");
         }
 
-        add_env_value(env, param->name, arg);
+        add_env_binding(env, param->name, arg);
         pos++;
     }
 
     struct sexpr* result = eval_sexpr(env, body);
 
-    // Iterate over parameters again to unbind them
-    params = lambda->function.lambda.params;
-    while (param = next(&params))
-    {
-        remove_env_value(env, param->name);
-    }
+    // Popping stack frame also clears bindings
+    pop_stack_frame(env);
 
     return result;
 }
@@ -723,7 +802,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
     }
     else if (sexpr->tag == symbol)
     {
-        struct sexpr* value = get_env_symbol(env, sexpr->name);
+        struct sexpr* value = get_env_binding(env, sexpr->name);
         if (!value)
         {
             printf("Unknown symbol: %s\n", sexpr->name);
@@ -789,8 +868,7 @@ void print_sexpr(struct sexpr* sexpr)
 
 void set_env(struct env* env)
 {
-    env->symbols = NULL;
-    env->symbol_count = 0;
+    env->stack = create_frame();
     add_env_builtin_function(env, "+", eval_add);
     add_env_builtin_function(env, "-", eval_subtract);
     add_env_builtin_function(env, "*", eval_multiply);
