@@ -4,6 +4,14 @@
 #include <string.h>
 #include <stdarg.h>
 
+enum sexpr_t;
+struct sexpr;
+struct env;
+struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
+struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
+struct sexpr* eval_type_argument(struct env* env, struct sexpr* args, int n, enum sexpr_t type);
+struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* args);
+
 enum sexpr_t
 {
     nil,
@@ -11,7 +19,8 @@ enum sexpr_t
     list,
     integer,
     symbol,
-    function
+    function,
+    boolean
 };
 
 enum function_t
@@ -19,8 +28,6 @@ enum function_t
     builtin,
     lambda
 };
-
-struct env;
 
 struct sexpr
 {
@@ -33,6 +40,7 @@ struct sexpr
             struct sexpr* tail;
         } list;
         int integer;
+        bool boolean;
         const char* name;
         const char* message;
         struct
@@ -49,9 +57,14 @@ struct sexpr
             };
         } function;
     };    
-} _NIL = { .tag = nil };
+}
+    _NIL = { .tag = nil },
+    _S_TRUE = { .tag = boolean, .boolean = true},
+    _S_FALSE = { .tag = boolean, .boolean = false};
 
 struct sexpr* NIL = &_NIL;
+struct sexpr* S_TRUE = &_S_TRUE;
+struct sexpr* S_FALSE = &_S_FALSE;
 
 struct sexpr* const new_sexpr(enum sexpr_t tag)
 {
@@ -165,6 +178,14 @@ int list_length(struct sexpr* list)
     return count;
 }
 
+struct sexpr* reduce(struct sexpr* (*fn) (struct sexpr*, struct sexpr*), struct sexpr* list, struct sexpr* state)
+{
+    struct sexpr* el;
+    while ((el = next(&list)))
+        state = fn(el, state);
+    return state;
+}
+
 void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
 {
     struct sexpr* v = new_function(builtin);
@@ -188,6 +209,27 @@ bool is_whitespace(char c)
 void skip_whitespace(const char** str)
 {
     for (;(**str) != '\0' && is_whitespace(**str); (*str)++);
+}
+
+bool is_prefix(const char* prefix, const char* str)
+{
+    return strncmp(prefix, str, strlen(prefix)) == 0;
+}
+
+struct sexpr* read_boolean(const char** str)
+{
+    if (is_prefix("true", *str))
+    {
+        (*str) += 4;
+        return S_TRUE;
+    }
+    else if (is_prefix("false", *str))
+    {
+        (*str) += 5;
+        return S_FALSE;
+    }
+    
+    return false;
 }
 
 struct sexpr* read_integer(const char** str)
@@ -356,6 +398,9 @@ struct sexpr* read_sexpr(const char** str)
     if ((e = read_quote(str)))
         return e;
 
+    if ((e = read_boolean(str)))
+        return e;
+
     if ((e = read_symbol(str)))
         return e;
 
@@ -366,6 +411,8 @@ int as_integer(struct sexpr* e)
 {
     if (e->tag == integer)
         return e->integer;
+    else if (e->tag == boolean)
+        return e->boolean ? 1: 0;
     else
         return 0; // Error?
 }
@@ -374,6 +421,8 @@ bool as_bool(struct sexpr* e)
 {
     switch (e->tag)
     {
+        case boolean:
+            return e->boolean;
         case integer:
             return e->integer != 0;
         default:
@@ -381,8 +430,6 @@ bool as_bool(struct sexpr* e)
     }
 }
 
-struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr);
-struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
 
 struct sexpr* eval_lambda(struct env* env, struct sexpr* args)
 {
@@ -424,6 +471,24 @@ struct sexpr* eval_if(struct env* env, struct sexpr* args)
         return eval_argument(env, args, 1);
     else
         return eval_argument(env, args, 2);
+}
+
+struct sexpr* eval_reduce(struct env* env, struct sexpr* args)
+{
+    struct sexpr* fn = eval_type_argument(env, args, 0, function);
+    CHECK_ERROR(fn);
+
+    struct sexpr* lst = eval_type_argument(env, args, 1, list);
+    CHECK_ERROR(lst);
+
+    struct sexpr* state = eval_argument(env, args, 2);
+    CHECK_ERROR(state);
+
+    struct sexpr* el;
+    while ((el = next(&lst)))
+        state = eval_sexpr(env, create_list(3, fn, el, state));    
+    
+    return state;
 }
 
 struct sexpr* eval_operator(char op, struct env* env, struct sexpr* args)
@@ -516,6 +581,16 @@ struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n)
     else
         return NIL;
 }
+
+struct sexpr* eval_type_argument(struct env* env, struct sexpr* args, int n, enum sexpr_t type)
+{
+    struct sexpr* arg = eval_argument(env, args, n);
+    CHECK_ERROR(arg);
+    if (arg->tag != type)
+        return new_error("Argument is of wrong type");
+    return arg;
+}
+
 
 struct sexpr* eval_define(struct env* env, struct sexpr* args)
 {
@@ -628,6 +703,12 @@ void print_sexpr(struct sexpr* sexpr)
     case symbol:
         printf("%s", sexpr->name);
         break;
+    case boolean:
+        if (sexpr->boolean)
+            printf("true");
+        else
+            printf("false");
+        break;
     case function:
         switch (sexpr->function.tag)
         {
@@ -660,7 +741,7 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "+", eval_add);
     add_env_builtin_function(env, "-", eval_subtract);
     add_env_builtin_function(env, "*", eval_multiply);
-    add_env_builtin_function(env, "/", eval_define);
+    add_env_builtin_function(env, "/", eval_division);
     add_env_builtin_function(env, "'", eval_quote);
     add_env_builtin_function(env, "quote", eval_quote);
     add_env_builtin_function(env, "list", eval_list);
@@ -668,6 +749,7 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "if", eval_if);
     add_env_builtin_function(env, "lambda", eval_lambda);
     add_env_builtin_function(env, "defun", eval_defun);
+    add_env_builtin_function(env, "reduce", eval_reduce);
 }
 
 void readline(char* buff, size_t size, bool* eof)
