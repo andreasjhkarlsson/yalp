@@ -132,6 +132,7 @@ struct frame
     struct binding* bindings;
     int binding_count;
     struct frame* previous;
+    struct sexpr* context;
 };
 
 struct frame* create_frame()
@@ -221,7 +222,6 @@ struct sexpr* get_env_binding(struct env* env, const char* name)
     return get_binding(env->stack, name);
 }
 
-
 void add_env_binding(struct env* env, const char* name, struct sexpr* val)
 {
     add_binding(env->stack, name, val);
@@ -241,10 +241,11 @@ void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (
     add_env_binding(env, name, v);
 }
 
-void push_stack_frame(struct env* env)
+void push_stack_frame(struct env* env, struct sexpr* context)
 {
     struct frame* frame = create_frame();
     frame->previous = env->stack;
+    frame->context = context;
     env->stack = frame;
 }
 
@@ -749,7 +750,7 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
     struct sexpr* params = lambda->function.lambda.params;
     struct sexpr* body = lambda->function.lambda.exprs;
 
-    push_stack_frame(env);
+    push_stack_frame(env, lambda);
 
     // Iterate over and bind parameters
     struct sexpr* param;
@@ -779,6 +780,17 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
     CHECK_ERROR(result);
 
     return result;
+}
+
+
+struct sexpr* eval_recur(struct env* env, struct sexpr* args)
+{
+    struct sexpr* lambda = env->stack->context;
+
+    if (!lambda)
+        return new_error("recur can only be used inside of lambda");
+    
+    return call_lambda(env, lambda, args);
 }
 
 struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
@@ -911,6 +923,7 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "reduce", eval_reduce);
     add_env_builtin_function(env, "print", eval_print);
     add_env_builtin_function(env, "printl", eval_printl);
+    add_env_builtin_function(env, "recur", eval_recur);
 }
 
 void readline(char* buff, size_t size, bool* eof)
