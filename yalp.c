@@ -795,6 +795,27 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
 }
 
 
+struct sexpr* eval_loop(struct env* env, struct sexpr* args)
+{
+    int arg_count = list_length(args);
+
+    if (arg_count < 3)
+        return new_error("loop needs at least 3 arguments");
+
+    struct sexpr* params = next(&args);
+
+    struct sexpr* initial_args = next(&args);
+
+    struct sexpr* body = args;
+
+    struct sexpr* l = new_function(lambda); 
+
+    l->function.lambda.params = params;
+    l->function.lambda.exprs = body;
+
+    return call_lambda(env, l, initial_args);
+}
+
 struct sexpr* eval_recur(struct env* env, struct sexpr* args)
 {
     struct sexpr* lambda = env->stack->context;
@@ -936,6 +957,7 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "print", eval_print);
     add_env_builtin_function(env, "printl", eval_printl);
     add_env_builtin_function(env, "recur", eval_recur);
+    add_env_builtin_function(env, "loop", eval_loop);
 }
 
 void readline(char* buff, size_t size, bool* eof)
