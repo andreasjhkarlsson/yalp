@@ -12,6 +12,7 @@ struct sexpr* eval_argument(struct env* env, struct sexpr* args, int n);
 struct sexpr* eval_type_argument(struct env* env, struct sexpr* args, int n, enum sexpr_t type);
 struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* args);
 struct sexpr* read_sexpr(const char** str);
+struct sexpr* create_list(int element_count, ...);
 
 enum sexpr_t
 {
@@ -57,7 +58,7 @@ struct sexpr
                 struct 
                 {
                     struct sexpr* params;
-                    struct sexpr* expr;
+                    struct sexpr* exprs;
                 } lambda;
             };
         } function;
@@ -421,11 +422,9 @@ struct sexpr* read_quote(const char** str)
     if (**str == '\'')
     {
         (*str)++;
-        
         struct sexpr* s = new_sexpr(symbol);
         s->name = "quote";
-        struct sexpr* sexpr = read_sexpr(str);
-        return create_list(2, s, sexpr);        
+        return create_list(2, s, read_sexpr(str));
     }
 
     return NULL;
@@ -519,11 +518,11 @@ bool as_bool(struct sexpr* e)
 struct sexpr* eval_lambda(struct env* env, struct sexpr* args)
 {
     struct sexpr* params = args->list.head;
-    struct sexpr* body = args->list.tail->list.head;
+    struct sexpr* body = args->list.tail;
 
     struct sexpr* sexpr = new_function(lambda);
     sexpr->function.lambda.params = params;
-    sexpr->function.lambda.expr = body;
+    sexpr->function.lambda.exprs = body;
 
     return sexpr;
 }
@@ -748,7 +747,7 @@ struct sexpr* eval_define(struct env* env, struct sexpr* args)
 struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* args)
 {
     struct sexpr* params = lambda->function.lambda.params;
-    struct sexpr* body = lambda->function.lambda.expr;
+    struct sexpr* body = lambda->function.lambda.exprs;
 
     push_stack_frame(env);
 
@@ -769,10 +768,15 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
         pos++;
     }
 
-    struct sexpr* result = eval_sexpr(env, body);
+    struct sexpr* result = NULL;
+    struct sexpr* expr;
+    while ((expr = next(&body)))
+        result = eval_sexpr(env, expr);
 
     // Popping stack frame also clears bindings
     pop_stack_frame(env);
+
+    CHECK_ERROR(result);
 
     return result;
 }
@@ -866,6 +870,28 @@ void print_sexpr(struct sexpr* sexpr)
     }
 }
 
+struct sexpr* eval_print(struct env* env, struct sexpr* args)
+{
+    struct sexpr* arg;
+    while ((arg = next(&args)))
+    {
+        struct sexpr* value = eval_sexpr(env, arg);
+        CHECK_ERROR(value);
+        print_sexpr(value);
+    }
+
+    return NIL;
+}
+
+struct sexpr* eval_printl(struct env* env, struct sexpr* args)
+{
+    eval_print(env, args);
+
+    printf("\n");
+
+    return NIL;    
+}
+
 void set_env(struct env* env)
 {
     env->stack = create_frame();
@@ -883,6 +909,8 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "lambda", eval_lambda);
     add_env_builtin_function(env, "defun", eval_defun);
     add_env_builtin_function(env, "reduce", eval_reduce);
+    add_env_builtin_function(env, "print", eval_print);
+    add_env_builtin_function(env, "printl", eval_printl);
 }
 
 void readline(char* buff, size_t size, bool* eof)
