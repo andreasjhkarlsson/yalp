@@ -282,6 +282,8 @@ bool is_operator(char c)
         case '-':
         case '*':
         case '/':
+        case '=':
+        case '<':
             return true;
         default:
             return false;
@@ -502,6 +504,53 @@ struct sexpr* eval_reduce(struct env* env, struct sexpr* args)
         state = eval_sexpr(env, create_list(3, fn, el, state));    
     
     return state;
+}
+
+struct sexpr* eval_bool_operator(struct env* env, struct sexpr* args, bool (*op) (struct sexpr*,struct sexpr*))
+{
+    int arg_length = list_length(args);
+    if (arg_length < 2)
+        return new_error("At least 2 args are needed for binary operator");
+    bool result = true;
+
+    struct sexpr* left = next(&args);
+    struct sexpr* right;
+    while ((right = next(&args)))
+    {
+        struct sexpr* eleft = eval_sexpr(env, left);
+        CHECK_ERROR(eleft);
+
+        struct sexpr* eright = eval_sexpr(env, right);
+        CHECK_ERROR(eright);
+
+        result = result && op(eleft, eright);
+
+        left = right;
+    }
+
+    return result ? S_TRUE: S_FALSE;
+}
+
+struct sexpr* eval_equals(struct env* env, struct sexpr* args)
+{
+    bool equals(struct sexpr* left, struct sexpr* right)
+    {
+        if (left == right)
+            return true;
+        return as_integer(left) == as_integer(right);
+    }
+
+    return eval_bool_operator(env, args, equals);
+}
+
+struct sexpr* eval_less(struct env* env, struct sexpr* args)
+{
+    bool less(struct sexpr* left, struct sexpr* right)
+    {
+        return as_integer(left) < as_integer(right);
+    }
+
+    return eval_bool_operator(env, args, less);
 }
 
 struct sexpr* eval_int_operator(struct env* env, struct sexpr* args, int (*op) (int,int), int state)
@@ -746,6 +795,8 @@ void set_env(struct env* env)
     add_env_builtin_function(env, "-", eval_subtract);
     add_env_builtin_function(env, "*", eval_multiply);
     add_env_builtin_function(env, "/", eval_division);
+    add_env_builtin_function(env, "=", eval_equals);
+    add_env_builtin_function(env, "<", eval_less);
     add_env_builtin_function(env, "'", eval_quote);
     add_env_builtin_function(env, "quote", eval_quote);
     add_env_builtin_function(env, "list", eval_list);
