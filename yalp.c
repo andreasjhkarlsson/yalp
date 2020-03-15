@@ -34,7 +34,7 @@ enum function_t
 struct sexpr
 {
     enum sexpr_t tag;
-    union 
+    union
     {
         struct
         {
@@ -55,14 +55,14 @@ struct sexpr
                     const char* name;
                     struct sexpr* (*fn) (struct env*, struct sexpr*);
                 } builtin;
-                struct 
+                struct
                 {
                     struct sexpr* params;
                     struct sexpr* exprs;
                 } lambda;
             };
         } function;
-    };    
+    };
 }
     _NIL = { .tag = nil },
     _S_TRUE = { .tag = boolean, .boolean = true},
@@ -103,7 +103,7 @@ struct sexpr* new_symbol(const char* str, size_t length)
     strncpy((char*)e->name, str, length);
     ((char*)e->name)[length] = '\0';
     return e;
-} 
+}
 
 struct sexpr* new_error(const char* message)
 {
@@ -144,6 +144,12 @@ struct frame* create_frame()
     return frame;
 }
 
+void delete_binding(struct binding* binding) {
+    free((void *)binding->name);
+    binding->name = NULL;
+    binding->value = NULL;
+}
+
 void remove_binding(struct frame* frame, const char* name, bool recursive)
 {
     for(int i=0;i<frame->binding_count;i++)
@@ -151,9 +157,7 @@ void remove_binding(struct frame* frame, const char* name, bool recursive)
         struct binding* binding = &frame->bindings[i];
         if (binding->name && strcmp(binding->name, name) == 0)
         {
-            free(binding->name);
-            binding->name = NULL;
-            binding->value = NULL;
+            delete_binding(binding);
             return;
         }
     }
@@ -170,11 +174,8 @@ void add_binding(struct frame* frame, const char* name, struct sexpr* value)
         struct binding* binding = &frame->bindings[i];
         if (binding->name && strcmp(binding->name, name) == 0)
         {
-            free(binding->name);
-            binding->name = NULL;
-            binding->value = NULL;
-        }
-        if (binding->name == NULL)
+            delete_binding(binding);
+        } else if (binding->name == NULL)
         {
             binding->name = copy_string(name);
             binding->value = value;
@@ -207,7 +208,7 @@ void free_frame(struct frame* frame)
     for (int i=0;i<frame->binding_count;i++)
     {
         if (frame->bindings[i].name)
-            free(frame->bindings[i].name);
+            delete_binding(&frame->bindings[i]);
     }
     free(frame);
 }
@@ -313,7 +314,7 @@ struct sexpr* read_boolean(const char** str)
         (*str) += 5;
         return S_FALSE;
     }
-    
+
     return false;
 }
 
@@ -347,7 +348,7 @@ bool is_symbol_character(char c)
 }
 
 bool is_operator(char c)
-{   
+{
     switch(c)
     {
         case '+':
@@ -371,13 +372,13 @@ struct sexpr* read_operator(const char** str)
         return s;
     }
 
-    return NULL;    
+    return NULL;
 }
 
 struct sexpr* read_symbol(const char** str)
 {
     struct sexpr* s;
-    if (s = read_operator(str))
+    if ((s = read_operator(str)))
         return s;
 
     if (!is_symbol_character(**str) || is_digit(**str))
@@ -397,7 +398,7 @@ struct sexpr* create_list(int element_count, ...)
     struct sexpr* head = NIL;
     struct sexpr* previous = NULL;
     va_list valist;
-    va_start(valist, element_count); 
+    va_start(valist, element_count);
 
     for (int i=0;i<element_count;i++)
     {
@@ -413,8 +414,8 @@ struct sexpr* create_list(int element_count, ...)
         previous = cell;
     }
 
-    va_end(valist); 
-    
+    va_end(valist);
+
     return head;
 }
 
@@ -438,7 +439,7 @@ struct sexpr* read_list(const char** str)
         (*str)++;
         struct sexpr* head = NIL;
         struct sexpr* previous = NULL;
-        
+
         while (true)
         {
             skip_whitespace(str);
@@ -452,7 +453,7 @@ struct sexpr* read_list(const char** str)
             if (previous)
                 previous->list.tail = cell;
             else
-                head = cell;                
+                head = cell;
 
             previous = cell;
         }
@@ -464,13 +465,13 @@ struct sexpr* read_list(const char** str)
     {
         return NULL;
     }
-    
+
 }
 
 struct sexpr* read_sexpr(const char** str)
 {
     struct sexpr* e = NULL;
-    
+
     // Skip spaces
     skip_whitespace(str);
 
@@ -571,8 +572,8 @@ struct sexpr* eval_reduce(struct env* env, struct sexpr* args)
 
     struct sexpr* el;
     while ((el = next(&lst)))
-        state = eval_sexpr(env, create_list(3, fn, el, state));    
-    
+        state = eval_sexpr(env, create_list(3, fn, el, state));
+
     return state;
 }
 
@@ -601,25 +602,25 @@ struct sexpr* eval_bool_operator(struct env* env, struct sexpr* args, bool (*op)
     return result ? S_TRUE: S_FALSE;
 }
 
+bool equals(struct sexpr* left, struct sexpr* right)
+{
+    if (left == right)
+        return true;
+    return as_integer(left) == as_integer(right);
+}
+
 struct sexpr* eval_equals(struct env* env, struct sexpr* args)
 {
-    bool equals(struct sexpr* left, struct sexpr* right)
-    {
-        if (left == right)
-            return true;
-        return as_integer(left) == as_integer(right);
-    }
-
     return eval_bool_operator(env, args, equals);
+}
+
+bool less(struct sexpr* left, struct sexpr* right)
+{
+    return as_integer(left) < as_integer(right);
 }
 
 struct sexpr* eval_less(struct env* env, struct sexpr* args)
 {
-    bool less(struct sexpr* left, struct sexpr* right)
-    {
-        return as_integer(left) < as_integer(right);
-    }
-
     return eval_bool_operator(env, args, less);
 }
 
@@ -637,44 +638,55 @@ struct sexpr* eval_int_operator(struct env* env, struct sexpr* args, int (*op) (
     return result;
 }
 
+int add(int a, int b) {
+    return a + b;
+}
+
 struct sexpr* eval_add(struct env* env, struct sexpr* args)
 {
-    int op(int a, int b) { return a + b; }
-    return eval_int_operator(env, args, op, 0);
+    return eval_int_operator(env, args, add, 0);
+}
+
+int subtract(int a, int b) {
+    return a - b;
 }
 
 struct sexpr* eval_subtract(struct env* env, struct sexpr* args)
 {
-    int op(int a, int b) { return a - b; }
-    
     if (args == NIL || args->list.tail == NIL)
-        return eval_int_operator(env, args, op, 0);
+        return eval_int_operator(env, args, subtract, 0);
     else
     {
         struct sexpr* first = eval_argument(env, args, 0);
         CHECK_ERROR(first);
-        return eval_int_operator(env, args->list.tail, op, as_integer(first));
+        return eval_int_operator(env, args->list.tail, subtract, as_integer(first));
     }
 
-    return eval_int_operator(env, args, op, 0);
+    return eval_int_operator(env, args, subtract, 0);
+}
+
+int multiply(int a, int b) {
+    return a * b;
 }
 
 struct sexpr* eval_multiply(struct env* env, struct sexpr* args)
 {
-    int op(int a, int b) { return a * b; }
-    return eval_int_operator(env, args, op, 1);
+    return eval_int_operator(env, args, multiply, 1);
+}
+
+int divide(int a, int b) {
+    return a / b;
 }
 
 struct sexpr* eval_division(struct env* env, struct sexpr* args)
 {
-    int op(int a, int b) { return a / b; }
     if (args == NIL || args->list.tail == NIL)
-        return eval_int_operator(env, args, op, 1);
+        return eval_int_operator(env, args, divide, 1);
     else
     {
         struct sexpr* first = eval_argument(env, args, 0);
         CHECK_ERROR(first);
-        return eval_int_operator(env, args->list.tail, op, as_integer(first));
+        return eval_int_operator(env, args->list.tail, divide, as_integer(first));
     }
 }
 
@@ -755,7 +767,7 @@ struct sexpr* call_lambda(struct env* env, struct sexpr* lambda, struct sexpr* a
     // Iterate over and bind parameters
     struct sexpr* param;
     int pos = 0;
-    while (param = next(&params))
+    while ((param = next(&params)))
     {
         struct sexpr* arg = eval_argument(env, args, pos);
 
@@ -789,7 +801,7 @@ struct sexpr* eval_recur(struct env* env, struct sexpr* args)
 
     if (!lambda)
         return new_error("recur can only be used inside of lambda");
-    
+
     return call_lambda(env, lambda, args);
 }
 
@@ -799,7 +811,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
     if (sexpr->tag == list)
     {
         struct sexpr* value = eval_sexpr(env, sexpr->list.head);
-        
+
         if (value->tag == function)
         {
             struct sexpr* args = sexpr->list.tail;
@@ -873,7 +885,7 @@ void print_sexpr(struct sexpr* sexpr)
         while (sexpr != NIL)
         {
             print_sexpr(sexpr->list.head);
-            
+
             if ((sexpr = sexpr->list.tail) != NIL)
                 printf(" ");
         }
@@ -901,7 +913,7 @@ struct sexpr* eval_printl(struct env* env, struct sexpr* args)
 
     printf("\n");
 
-    return NIL;    
+    return NIL;
 }
 
 void set_env(struct env* env)
@@ -929,7 +941,7 @@ void set_env(struct env* env)
 void readline(char* buff, size_t size, bool* eof)
 {
     memset(buff, '\0', size);
-    for(int i=0;i<size-1;)
+    for(size_t i=0;i<size-1;)
     {
         int data = getchar();
         if (data == EOF)
@@ -964,7 +976,7 @@ int paren_balance(const char* str)
 struct string_builder
 {
     char* str;
-    int total_bytes;
+    size_t total_bytes;
 };
 
 void init_string_builder(struct string_builder *builder)
@@ -982,7 +994,7 @@ void append_string_builder(struct string_builder* builder, const char* str)
     if (new_length > builder->total_bytes)
     {
         builder->total_bytes *= 2;
-        builder->str = realloc(builder->str, builder->total_bytes);        
+        builder->str = realloc(builder->str, builder->total_bytes);
     }
 
     strncat(builder->str, str, new_length - current_length);
@@ -1006,20 +1018,20 @@ int main()
 
     struct string_builder input_builder;
     init_string_builder(&input_builder);
-    
+
     bool eof = false;
 
     while (!eof)
     {
         static char buffer[4096];
         printf("> ");
-        
+
         reset_string_builder(&input_builder);
         do
         {
             readline(buffer, 4096, &eof);
             const char* line = buffer;
-        
+
             skip_whitespace(&line);
 
             append_string_builder(&input_builder, line);
