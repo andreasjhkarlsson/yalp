@@ -48,7 +48,11 @@ struct sexpr
             enum function_t tag;
             union
             {
-                struct sexpr* (*builtin) (struct env*, struct sexpr*);
+                struct
+                {
+                    const char* name;
+                    struct sexpr* (*fn) (struct env*, struct sexpr*);
+                } builtin;
                 struct 
                 {
                     struct sexpr* params;
@@ -66,13 +70,20 @@ struct sexpr* NIL = &_NIL;
 struct sexpr* S_TRUE = &_S_TRUE;
 struct sexpr* S_FALSE = &_S_FALSE;
 
-struct sexpr* const new_sexpr(enum sexpr_t tag)
+struct sexpr* new_sexpr(enum sexpr_t tag)
 {
     struct sexpr* e = malloc(sizeof(struct sexpr));
     memset(e, 0, sizeof(struct sexpr));
 
     e->tag = tag;
 
+    return e;
+}
+
+struct sexpr* new_integer(int n)
+{
+    struct sexpr* e = new_sexpr(integer);
+    e->integer = n;
     return e;
 }
 
@@ -189,7 +200,9 @@ struct sexpr* reduce(struct sexpr* (*fn) (struct sexpr*, struct sexpr*), struct 
 void add_env_builtin_function(struct env* env, const char* name, struct sexpr* (*fn) (struct env* env, struct sexpr*))
 {
     struct sexpr* v = new_function(builtin);
-    v->function.builtin = fn;
+    v->function.builtin.name = malloc(strlen(name) + 1);
+    strcpy(v->function.builtin.name, name);
+    v->function.builtin.fn = fn;
 
     add_env_value(env, name, v);
 }
@@ -491,58 +504,49 @@ struct sexpr* eval_reduce(struct env* env, struct sexpr* args)
     return state;
 }
 
-struct sexpr* eval_operator(char op, struct env* env, struct sexpr* args)
+struct sexpr* eval_int_operator(struct env* env, struct sexpr* args, int (*op) (int,int), int state)
 {
-
-    int result = 0;
-    if (op == '*' || op == '/')
-        result = 1;
-    bool first = true;
-    while (args != NIL)
+    struct sexpr* result = new_integer(state);
+    struct sexpr* arg;
+    while ((arg = next(&args)))
     {
-        struct sexpr* arg = eval_sexpr(env, args->list.head);
+        arg = eval_sexpr(env, arg);
         CHECK_ERROR(arg);
-
-        int value = as_integer(arg);
-        switch (op)
-        {
-            case '+': result += value; break;
-            case '-': result -= value; break;
-            case '*': result *= value; break;
-            case '/':
-                if (args->list.tail && first)
-                    result = value;
-                else
-                    result /= value;
-                break;
-        }
-        args = args->list.tail;
-        first = false;
+        result->integer = op(result->integer, as_integer(arg));
     }
 
-    struct sexpr* e = new_sexpr(integer);
-    e->integer = result;
-    return e;
+    return result;
 }
 
 struct sexpr* eval_add(struct env* env, struct sexpr* args)
 {
-    return eval_operator('+', env, args);
+    int op(int a, int b) { return a + b; }
+    return eval_int_operator(env, args, op, 0);
 }
 
 struct sexpr* eval_subtract(struct env* env, struct sexpr* args)
 {
-    return eval_operator('-', env, args);
+    int op(int a, int b) { return a - b; }
+    return eval_int_operator(env, args, op, 0);
 }
 
 struct sexpr* eval_multiply(struct env* env, struct sexpr* args)
 {
-    return eval_operator('*', env, args);
+    int op(int a, int b) { return a * b; }
+    return eval_int_operator(env, args, op, 1);
 }
 
 struct sexpr* eval_division(struct env* env, struct sexpr* args)
 {
-    return eval_operator('/', env, args);
+    int op(int a, int b) { return a / b; }
+    if (args == NIL || args->list.tail == NIL)
+        return eval_int_operator(env, args, op, 1);
+    else
+    {
+        struct sexpr* first = eval_argument(env, args, 0);
+        CHECK_ERROR(first);
+        return eval_int_operator(env, args->list.tail, op, as_integer(first));
+    }
 }
 
 struct sexpr* eval_quote(struct env* env, struct sexpr* args)
@@ -658,7 +662,7 @@ struct sexpr* eval_sexpr(struct env* env, struct sexpr* sexpr)
             switch (value->function.tag)
             {
                 case builtin:
-                    return value->function.builtin(env, args);
+                    return value->function.builtin.fn(env, args);
                 case lambda:
                     return call_lambda(env, value, args);
             }
@@ -713,7 +717,7 @@ void print_sexpr(struct sexpr* sexpr)
         switch (sexpr->function.tag)
         {
             case builtin:
-                printf("<builtin function>"); // TODO: Try to get name
+                printf("<builtin function '%s'>", sexpr->function.builtin.name);
                 break;
             case lambda:
                 printf("<lambda function>");
